@@ -23,16 +23,26 @@ razorpay_client = razorpay.Client(
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 
+# # ---------------- EMAIL CONFIGURATION ----------------
+# app.config['MAIL_SERVER'] = config.MAIL_SERVER
+# app.config['MAIL_PORT'] = config.MAIL_PORT
+# app.config['MAIL_USE_TLS'] = config.MAIL_USE_TLS
+# app.config['MAIL_USERNAME'] = config.MAIL_USERNAME
+# app.config['MAIL_PASSWORD'] = config.MAIL_PASSWORD
+
+
 # ---------------- EMAIL CONFIGURATION ----------------
 app.config['MAIL_SERVER'] = config.MAIL_SERVER
 app.config['MAIL_PORT'] = config.MAIL_PORT
 app.config['MAIL_USE_TLS'] = config.MAIL_USE_TLS
+app.config['MAIL_USE_SSL'] = False
 app.config['MAIL_USERNAME'] = config.MAIL_USERNAME
 app.config['MAIL_PASSWORD'] = config.MAIL_PASSWORD
-
+app.config['MAIL_DEFAULT_SENDER'] = config.MAIL_USERNAME
 
 
 mail = Mail(app)
+SUPERADMIN_EMAIL = config.MAIL_USERNAME
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
@@ -47,14 +57,21 @@ app.config['PROFILE_UPLOAD_FOLDER'] = os.path.join(
 
 # ---------------- DB CONNECTION FUNCTION --------------
 def get_db_connection():
-    conn = sqlite3.connect("smartcart.db")
+    db_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "smartcart.db"
+    )
+
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode=WAL")
+
     return conn
 
-SUPERADMIN_EMAIL = "superadmin_email@gmail.com"
-SENDER_EMAIL = "your_gmail@gmail.com"
-SENDER_APP_PASSWORD = "your_gmail_app_password"
+# SUPERADMIN_EMAIL = "superadmin_email@gmail.com"
+# SENDER_EMAIL = "your_gmail@gmail.com"
+# SENDER_APP_PASSWORD = "your_gmail_app_password"
 
 
 
@@ -65,15 +82,13 @@ SENDER_APP_PASSWORD = "your_gmail_app_password"
 @app.route('/admin-signup', methods=['GET', 'POST'])
 def admin_signup():
 
-    # Show form
     if request.method == "GET":
         return render_template("admin/admin_signup.html", hide_admin_nav=True)
 
-    # POST → Process signup
     name = request.form['name']
     email = request.form['email']
 
-    # 1️⃣ Check if admin email already exists
+    # Check if admin exists
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT admin_id FROM admin WHERE email=?", (email,))
@@ -85,40 +100,62 @@ def admin_signup():
         flash("This email is already registered. Please login instead.", "danger")
         return redirect('/admin-signup')
 
-    # 2️⃣ Save user input temporarily in session
+    # Store in session
     session['signup_name'] = name
     session['signup_email'] = email
 
-    # 3️⃣ Generate OTP and store in session
-    otp = random.randint(100000, 999999)
+    # Generate OTP (STRING)
+    otp = str(random.randint(100000, 999999))
     session['otp'] = otp
 
-    # 4️⃣ Send OTP Email
+    # Send Email
     message = Message(
         subject="SmartCart Admin OTP",
-        sender=config.MAIL_USERNAME,
+        sender=app.config['MAIL_DEFAULT_SENDER'],
         recipients=[email]
     )
-    message.body = f"Your OTP for SmartCart Admin Registration is: {otp}"
-    mail.send(message)
 
-    flash("OTP sent to your email!", "success")
+    message.body = f"""
+Hello,
+
+Your OTP for SmartCart Admin Registration is: {otp}
+
+Thank you,
+SmartCart Team
+"""
+
+    try:
+        mail.send(message)
+        flash("OTP sent to your email!", "success")
+
+    except Exception as e:
+        print("OTP MAIL ERROR:", e)
+
+        # 🔥 IMPORTANT FIX (fallback)
+        flash(f"Email failed. Your OTP is: {otp}", "warning")
+
+    # ALWAYS continue
     return redirect('/verify-otp')
 
 
-@app.route('/verify-otp', methods=['GET'])
-def verify_otp_get():
-    return render_template("admin/verify_otp.html", hide_admin_nav=True)
+
+
+#==============================================
+#     SUPERADMIN APPROVAL FUNCTION
+#==============================================
 
 def send_admin_approval_mail(admin_id, name, email):
 
-    approve_link = f"http://127.0.0.1:5000/superadmin/approve-admin/{admin_id}"
-    reject_link = f"http://127.0.0.1:5000/superadmin/reject-admin/{admin_id}"
+    BASE_URL = "https://lenkanarendra.pythonanywhere.com"
+
+    approve_link = f"{BASE_URL}/superadmin/approve-admin/{admin_id}"
+    reject_link = f"{BASE_URL}/superadmin/reject-admin/{admin_id}"
 
     message = Message(
         subject="New Admin Approval Request",
-        sender=config.MAIL_USERNAME,
-        recipients=[SUPERADMIN_EMAIL]
+        sender=email,
+        recipients=[SUPERADMIN_EMAIL],
+        reply_to=email
     )
 
     message.body = f"""
@@ -134,41 +171,76 @@ Reject:
 {reject_link}
 """
 
-    mail.send(message)
+    try:
+        mail.send(message)
+        print("ADMIN APPROVAL MAIL SENT")
 
+    except Exception as e:
+        print("ADMIN APPROVAL MAIL ERROR:", e)
 #==============================================================
 # ADMIN-VERIFY OTP Route
 #==============================================================
+@app.route('/verify-otp', methods=['GET'])
+def verify_otp_get():
+    return render_template("admin/verify_otp.html", hide_admin_nav=True)
+
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp_post():
-    
-    user_otp = request.form['otp']
-    password = request.form['password']
 
+    user_otp = request.form.get('otp')
+    password = request.form.get('password')
+
+    # Check session data exists
+    if 'otp' not in session or 'signup_name' not in session or 'signup_email' not in session:
+        flash("Session expired. Please register again.", "danger")
+        return redirect('/admin-signup')
+
+    # Verify OTP
     if str(session.get('otp')) != str(user_otp):
         flash("Invalid OTP. Try again!", "danger")
         return redirect('/verify-otp')
 
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    hashed_password = bcrypt.hashpw(
+        password.encode('utf-8'),
+        bcrypt.gensalt()
+    ).decode('utf-8')
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "INSERT INTO admin (name, email, password, status) VALUES (?, ?, ?, ?)",
-        (session['signup_name'], session['signup_email'], hashed_password, 'pending')
-    )
+    try:
+        cursor.execute(
+            "INSERT INTO admin (name, email, password, status) VALUES (?, ?, ?, ?)",
+            (
+                session['signup_name'],
+                session['signup_email'],
+                hashed_password,
+                'pending'
+            )
+        )
 
-    conn.commit()
+        conn.commit()
 
-    admin_id = cursor.lastrowid
-    admin_name = session['signup_name']
-    admin_email = session['signup_email']
+        admin_id = cursor.lastrowid
+        admin_name = session['signup_name']
+        admin_email = session['signup_email']
 
-    cursor.close()
-    conn.close()
+    except Exception as e:
+        conn.rollback()
+        print("ADMIN INSERT ERROR:", e)
+        flash("Registration failed. Please try again.", "danger")
+        return redirect('/verify-otp')
 
-    send_admin_approval_mail(admin_id, admin_name, admin_email)
+    finally:
+        cursor.close()
+        conn.close()
+
+    # Send approval mail safely
+    try:
+        send_admin_approval_mail(admin_id, admin_name, admin_email)
+    except Exception as e:
+        print("ADMIN APPROVAL MAIL ERROR:", e)
+        # Do not stop registration if mail fails
 
     session.pop('otp', None)
     session.pop('signup_name', None)
@@ -176,7 +248,6 @@ def verify_otp_post():
 
     flash("Admin Registered Successfully! Please wait for Super Admin approval.", "success")
     return redirect('/admin-login')
-
 # =================================================================
 # ROUTE 4: ADMIN LOGIN PAGE (GET + POST)
 # =================================================================
@@ -460,7 +531,7 @@ def update_item(item_id):
 
     # 3️⃣ If admin uploaded a new image → replace it
     if new_image and new_image.filename != "":
-        
+
         # Secure filename
         from werkzeug.utils import secure_filename
         new_filename = secure_filename(new_image.filename)
@@ -603,7 +674,7 @@ def admin_profile_update():
 
     # 4️⃣ Process new profile image if uploaded
     if new_image and new_image.filename != "":
-        
+
         from werkzeug.utils import secure_filename
         new_filename = secure_filename(new_image.filename)
 
@@ -633,7 +704,7 @@ def admin_profile_update():
     conn.close()
 
     # Update session name for UI consistency
-    session['admin_name'] = name  
+    session['admin_name'] = name
     session['admin_email'] = email
 
     flash("Profile updated successfully!", "success")
@@ -677,7 +748,7 @@ Message:
 
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
-        server.login(app.config['MAIL_USERNAME'], app.config['MAIL_PASSWORD'])        
+        server.login(app.config['MAIL_USERNAME'], app.config['MAIL_PASSWORD'])
         server.send_message(msg)
         server.quit()
 
@@ -790,7 +861,7 @@ def admin_orders():
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT 
+    SELECT
         o.*,
         datetime(o.created_at, '+5 hours', '+30 minutes') AS created_at_ist,
         SUM(oi.total) AS admin_amount
@@ -890,20 +961,18 @@ def update_order_status(order_id):
 
 # ---------------------------------------- USER MODULE --------------------------------------------------------
 # =================================================================
-# ROUTE 01: USER REGISTRATION
+# ROUTE 02: USER REGISTRATION
 # =================================================================
 @app.route('/user-register', methods=['GET', 'POST'])
 def user_register():
 
-    # Show form
     if request.method == "GET":
         return render_template("user/user_register.html", hide_admin_nav=True)
 
-    # POST → Process signup
     name = request.form['name']
     email = request.form['email']
 
-    # 1️⃣ Check if admin email already exists
+    # Check if user exists
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE email=?", (email,))
@@ -915,24 +984,41 @@ def user_register():
         flash("This email is already registered. Please login instead.", "danger")
         return redirect('/user-register')
 
-    # 2️⃣ Save user input temporarily in session
+    # Store session
     session['signup_name'] = name
     session['signup_email'] = email
 
-    # 3️⃣ Generate OTP and store in session
-    otp = random.randint(100000, 999999)
+    # Generate OTP (STRING FIXED)
+    otp = str(random.randint(100000, 999999))
     session['otp'] = otp
 
-    # 4️⃣ Send OTP Email
+    # Send Email
     message = Message(
         subject="SmartCart User OTP",
-        sender=config.MAIL_USERNAME,
+        sender=app.config['MAIL_DEFAULT_SENDER'],
         recipients=[email]
     )
-    message.body = f"Your OTP for SmartCart User Registration is: {otp}"
-    mail.send(message)
 
-    flash("OTP sent to your email!", "success")
+    message.body = f"""
+Hello,
+
+Your OTP for SmartCart User Registration is: {otp}
+
+Thank you,
+SmartCart Team
+"""
+
+    try:
+        mail.send(message)
+        flash("OTP sent to your email!", "success")
+
+    except Exception as e:
+        print("OTP MAIL ERROR:", e)
+
+        # 🔥 IMPORTANT FIX
+        flash(f"Email failed. Your OTP is: {otp}", "warning")
+
+    # ALWAYS continue
     return redirect('/user-verify-otp')
 
 
@@ -944,7 +1030,7 @@ def user_verify_otp_get():
 
 @app.route('/user-verify-otp', methods=['POST'])
 def user_verify_otp_post():
-    
+
     # User submitted OTP + Password
     user_otp = request.form['otp']
     password = request.form['password']
@@ -973,7 +1059,7 @@ def user_verify_otp_post():
     session.pop('signup_name', None)
     session.pop('signup_email', None)
 
-    flash("Admin Registered Successfully!", "success")
+    flash("User Registered Successfully!", "success")
     return redirect('/user-login')
 
 
@@ -1475,7 +1561,7 @@ def view_cart():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT 
+        SELECT
             cart.cart_id,
             cart.product_id,
             cart.quantity,
@@ -1540,7 +1626,7 @@ def pay_selected_products():
     cursor = conn.cursor()
 
     cursor.execute(f"""
-        SELECT 
+        SELECT
             cart.product_id,
             cart.quantity,
             products.price
@@ -1606,7 +1692,7 @@ def user_pay():
         placeholders = ",".join(["?"] * len(selected_products))
 
         cursor.execute(f"""
-            SELECT 
+            SELECT
                 cart.product_id,
                 cart.quantity,
                 products.price
@@ -1618,7 +1704,7 @@ def user_pay():
 
     else:
         cursor.execute("""
-            SELECT 
+            SELECT
                 cart.product_id,
                 cart.quantity,
                 products.price
@@ -2037,7 +2123,7 @@ def verify_payment():
         if selected_products:
             placeholders = ','.join(['?'] * len(selected_products))
             query = f"""
-                SELECT 
+                SELECT
                     cart.product_id,
                     cart.quantity,
                     products.name,
@@ -2051,7 +2137,7 @@ def verify_payment():
             cursor.execute(query, [user_id] + selected_products)
         else:
             cursor.execute("""
-                SELECT 
+                SELECT
                     cart.product_id,
                     cart.quantity,
                     products.name,
@@ -2185,7 +2271,7 @@ def order_success(order_db_id):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT 
+    SELECT
         *,
         datetime(created_at, '+5 hours', '+30 minutes') AS created_at_ist
     FROM orders
@@ -2220,7 +2306,7 @@ def my_orders():
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT 
+    SELECT
         order_id,
         user_id,
         amount,
@@ -2301,7 +2387,7 @@ def download_invoice(order_id):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT 
+    SELECT
         *,
         datetime(created_at, '+5 hours', '+30 minutes') AS created_at_ist
     FROM orders
@@ -2468,7 +2554,7 @@ def superadmin_dashboard():
 @app.route('/superadmin/admins')
 def superadmin_admins():
 
-    if not superadmin_required():
+    if 'superadmin_id' not in session:
         return redirect('/superadmin-login')
 
     conn = get_db_connection()
@@ -2477,11 +2563,12 @@ def superadmin_admins():
     cursor.execute("SELECT * FROM admin ORDER BY admin_id DESC")
     admins = cursor.fetchall()
 
+    print("ADMINS DATA:", admins)  # 🔥 IMPORTANT
+
     cursor.close()
     conn.close()
 
     return render_template('superadmin/admins.html', admins=admins)
-
 # ============================================================
 # APPROVE ADMIN
 # ============================================================
@@ -2530,25 +2617,33 @@ def reject_admin(admin_id):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1️⃣ Reject admin
-    cursor.execute("""
-        UPDATE admin
-        SET status = 'rejected'
-        WHERE admin_id = ?
-    """, (admin_id,))
+    try:
+        # 1️⃣ Reject admin
+        cursor.execute("""
+            UPDATE admin
+            SET status = 'rejected'
+            WHERE admin_id = ?
+        """, (admin_id,))
 
-    # 2️⃣ Deactivate all products of this admin
-    cursor.execute("""
-        UPDATE products
-        SET status = 'inactive'
-        WHERE admin_id = ?
-    """, (admin_id,))
+        # 2️⃣ Hide all products of this admin from user side
+        cursor.execute("""
+            UPDATE products
+            SET status = 'inactive'
+            WHERE admin_id = ?
+        """, (admin_id,))
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+        flash("Admin rejected and products hidden from users!", "warning")
 
-    flash("Admin rejected and their products removed from user view!", "warning")
+    except Exception as e:
+        conn.rollback()
+        print("REJECT ADMIN ERROR:", e)
+        flash("Something went wrong while rejecting admin.", "danger")
+
+    finally:
+        cursor.close()
+        conn.close()
+
     return redirect('/superadmin/admins')
 
 # ============================================================
@@ -2590,7 +2685,7 @@ def superadmin_orders():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT 
+        SELECT
             orders.order_id,
             orders.user_id,
             users.name AS username,
@@ -2628,7 +2723,7 @@ def superadmin_revenue():
     total_revenue = cursor.fetchone()['total_revenue']
 
     cursor.execute("""
-        SELECT 
+        SELECT
             admin.name AS admin_name,
             IFNULL(SUM(orders.amount), 0) AS revenue
         FROM admin

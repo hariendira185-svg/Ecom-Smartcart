@@ -11,14 +11,30 @@ SECRET_KEY = "hello@123"   # used for sessions
 DB_HOST = "localhost"
 DB_USER = "root"
 DB_PASSWORD = "171004"  # keep empty if no password
-DB_NAME = "Smartcart_db"        
+DB_NAME = "Smartcart_db"
+
+# Email SMTP Settings
+# MAIL_SERVER = 'smtp.gmail.com'
+# MAIL_PORT = 587
+# MAIL_USE_TLS = True
+# MAIL_USERNAME = 'smartcart2k26@gmail.com'
+# MAIL_PASSWORD = 'fixd nzgo zktc tqif'   # Gmail App Password
+
 
 # Email SMTP Settings
 MAIL_SERVER = 'smtp.gmail.com'
 MAIL_PORT = 587
 MAIL_USE_TLS = True
+MAIL_USE_SSL = False
 MAIL_USERNAME = 'smartcart2k26@gmail.com'
-MAIL_PASSWORD = 'fixd nzgo zktc tqif'   # Gmail App Password
+MAIL_PASSWORD = 'hnzz ulya loyn azsg'
+MAIL_DEFAULT_SENDER = MAIL_USERNAME
+
+
+
+
+
+
 
 RAZORPAY_KEY_ID = "rzp_test_SgserJ7uNLGmPg"
 RAZORPAY_KEY_SECRET = "3fH1NzJO0gw5mZlAkIimMPe4"
